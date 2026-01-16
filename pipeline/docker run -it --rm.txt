@@ -6,7 +6,7 @@ docker run -it --rm\
     --pg-host=pgdatabase \
     --pg-port=5432 \
     --pg-db=ny_taxi \
-    --target-table=yellow_taxi_trips_2025_11 \
+    --target-table=green_taxi_trips_2025_11 \
     --year=2025 \
     --month=11 \
     --chunksize=100000

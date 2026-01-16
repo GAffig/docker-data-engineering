@@ -127,7 +127,7 @@ def main(pg_user, pg_pass, pg_host, pg_port, pg_db, year, month, chunksize, targ
     )
 
     url_prefix = 'https://d37ci6vzurychx.cloudfront.net/trip-data'
-    url = f'{url_prefix}/yellow_tripdata_{year:04d}-{month:02d}.parquet'
+    url = f'{url_prefix}/green_tripdata_{year:04d}-{month:02d}.parquet'
 
     ingest_data(
         url=url,
