@@ -1,11 +1,21 @@
 #!/usr/bin/env python
 # coding: utf-8
 
+import tempfile
+import requests
+import pyarrow.parquet as pq
+
 import click
 import pandas as pd
 from sqlalchemy import create_engine
 from tqdm.auto import tqdm
 
+
+# -------------------------------------------------------------------
+# NOTE:
+# dtype and parse_dates are no longer required for PARQUET,
+# but keeping them here does NOT break anything.
+# -------------------------------------------------------------------
 dtype = {
     "VendorID": "Int64",
     "passenger_count": "Int64",
@@ -31,65 +41,93 @@ parse_dates = [
 ]
 
 
+# -------------------------------------------------------------------
+# INGEST FUNCTION (PARQUET, CSV-LIKE FLOW)
+# -------------------------------------------------------------------
 def ingest_data(
         url: str,
         engine,
         target_table: str,
         chunksize: int = 100000,
-) -> pd.DataFrame:
-    df_iter = pd.read_csv(
-        url,
-        dtype=dtype,
-        parse_dates=parse_dates,
-        iterator=True,
-        chunksize=chunksize
-    )
+) -> None:
+    """
+    Ingest NYC Taxi PARQUET data into PostgreSQL using CSV-like chunk logic.
+    """
 
-    first_chunk = next(df_iter)
+    print(f"Downloading: {url}")
 
-    first_chunk.head(0).to_sql(
-        name=target_table,
-        con=engine,
-        if_exists="replace"
-    )
+    # Keep everything inside this block so temp file stays alive
+    with tempfile.NamedTemporaryFile(suffix=".parquet") as f:
 
-    print(f"Table {target_table} created")
+        # 1) Download parquet file
+        with requests.get(url, stream=True) as r:
+            r.raise_for_status()
+            for chunk in r.iter_content(chunk_size=1024 * 1024):  # 1MB
+                if chunk:
+                    f.write(chunk)
+        f.flush()
 
-    first_chunk.to_sql(
-        name=target_table,
-        con=engine,
-        if_exists="append"
-    )
+        # 2) Create batch iterator (acts like read_csv(chunksize=...))
+        pf = pq.ParquetFile(f.name)
+        df_iter = pf.iter_batches(batch_size=chunksize)
 
-    print(f"Inserted first chunk: {len(first_chunk)}")
+        # 3) First batch → create table + insert
+        first_chunk = next(df_iter).to_pandas()
 
-    for df_chunk in tqdm(df_iter):
-        df_chunk.to_sql(
+        first_chunk.head(0).to_sql(
             name=target_table,
             con=engine,
-            if_exists="append"
+            if_exists="replace",
+            index=False
         )
-        print(f"Inserted chunk: {len(df_chunk)}")
+        print(f"Table {target_table} created")
 
-    print(f'done ingesting to {target_table}')
+        first_chunk.to_sql(
+            name=target_table,
+            con=engine,
+            if_exists="append",
+            index=False
+        )
+        print(f"Inserted first chunk: {len(first_chunk)}")
+
+        # 4) Remaining batches
+        for batch in tqdm(df_iter):
+            df_chunk = batch.to_pandas()
+            df_chunk.to_sql(
+                name=target_table,
+                con=engine,
+                if_exists="append",
+                index=False
+            )
+            print(f"Inserted chunk: {len(df_chunk)}")
+
+    print(f"done ingesting to {target_table}")
 
 
+# -------------------------------------------------------------------
+# CLI
+# -------------------------------------------------------------------
 @click.command()
 @click.option('--pg-user', default='root', help='PostgreSQL username')
 @click.option('--pg-pass', default='root', help='PostgreSQL password')
 @click.option('--pg-host', default='localhost', help='PostgreSQL host')
 @click.option('--pg-port', default='5432', help='PostgreSQL port')
 @click.option('--pg-db', default='ny_taxi', help='PostgreSQL database name')
-@click.option('--year', default=2021, type=int, help='Year for data ingestion')
-@click.option('--month', default=1, type=int, help='Month for data ingestion')
-@click.option('--chunksize', default=100000, type=int, help='Chunk size for reading CSV')
+@click.option('--year', default=2025, type=int, help='Year for data ingestion')
+@click.option('--month', default=11, type=int, help='Month for data ingestion')
+@click.option('--chunksize', default=100000, type=int, help='Chunk size')
 @click.option('--target-table', default='yellow_taxi_data', help='Target table name')
 def main(pg_user, pg_pass, pg_host, pg_port, pg_db, year, month, chunksize, target_table):
-    """Ingest NYC taxi data into PostgreSQL database."""
-    engine = create_engine(f'postgresql://{pg_user}:{pg_pass}@{pg_host}:{pg_port}/{pg_db}')
-    url_prefix = 'https://github.com/DataTalksClub/nyc-tlc-data/releases/download/yellow'
+    """
+    Ingest NYC Taxi data into PostgreSQL.
+    """
 
-    url = f'{url_prefix}/yellow_tripdata_{year:04d}-{month:02d}.csv.gz'
+    engine = create_engine(
+        f'postgresql://{pg_user}:{pg_pass}@{pg_host}:{pg_port}/{pg_db}'
+    )
+
+    url_prefix = 'https://d37ci6vzurychx.cloudfront.net/trip-data'
+    url = f'{url_prefix}/yellow_tripdata_{year:04d}-{month:02d}.parquet'
 
     ingest_data(
         url=url,
