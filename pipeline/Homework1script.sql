@@ -1,4 +1,4 @@
--- There are 989009 trips in Noc 2025 with trip distance <= 1
+-- There are 8007 trips in Nov 2025 with trip distance <= 1
 SELECT COUNT(*)
 FROM public.green_taxi_trips_2025_11
 WHERE trip_distance <= 1;
